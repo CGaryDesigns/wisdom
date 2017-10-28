@@ -64,9 +64,9 @@ wisdom.authorize = (callback) => {
 
 }
 wisdom.articleObjectDataQueue = new Queue((input,callback)=>{
-                                            console.log('Working on getting details for item %s.',input.name);
+                                            console.log('Working on getting details for Article Type %s.',input.name);
                                             wisdom.obtainArticleTypeDetail(input,callback);
-                                        },{afterProcessDelay:2000})
+                                        },{afterProcessDelay:1000})
                                         .on('drain',()=>{
                                             console.log('Done Getting article type data');
                                             wisdom.createArticleStorageStructure(()=>{
@@ -109,7 +109,7 @@ wisdom.extractArticles = ()=>{
         }
         console.log(data);
         console.log('Executing extractArticles.');
-        console.log('About to get articleTypes');
+        console.log('Going to Find Knowledge Article Types...');
         wisdom.obtainArticleTypeData(()=>{
             _.each(wisdom.data.articleTypes,(value,key,list)=>{
                 wisdom.articleObjectDataQueue.push(value);
@@ -165,7 +165,7 @@ wisdom.obtainArticleTypeDetail = (articleTypeObj,callback)=>{
 wisdom.createArticleStorageStructure = (callback)=>{
     console.log('Executing createArticleStorageStructure');
     _.each(wisdom.data.articleTypes,(value,key,list)=>{
-        let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,value.name);
+        let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(value.name,'v'));
         fs.mkdir(dirPath,(err)=>{
             if(err && err.message.substr('EEXIST')==-1){
                 console.log('Could not create directory %s.',dirPath);
@@ -178,7 +178,7 @@ wisdom.createArticleStorageStructure = (callback)=>{
                 //TODO: need to make sure these don't exist
             }
             let fileData = wisdom.utils.createCSVFileHeader(value);
-            let fileName = path.join(dirPath,value.name+'.csv');
+            let fileName = path.join(dirPath,s.rtrim(value.name,'v')+'.csv');
             fs.writeFile(fileName,fileData+"\n",(err)=>{
                 if(err){
                     console.log('Error writing file %s.',fileName);
@@ -249,13 +249,13 @@ wisdom.sortAndSaveArticle = (articleObj,callback)=>{
     //first lets figure out where to save this data
     let keyPrefix = articleObj.id.substr(0,3);
     let articleType = wisdom.data.articleTypes[keyPrefix];
-    let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,articleType.name);
+    let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.trim(articleType.name,'v'));
     let fileName = path.join(dirPath,articleObj.id+'.json');
-    /*
+    
     let csvHeader;
     let lineCounter = 0;
     let fileLineReader = readline.createInterface({
-                            input:fs.createReadStream(path.join(dirPath,articleType.name+'.csv'))
+                            input:fs.createReadStream(path.join(dirPath,s.rtrim(articleType.name,'v')+'.csv'))
                         })
                         .on('line',(line)=>{
                             if(lineCounter < 1){
@@ -270,40 +270,53 @@ wisdom.sortAndSaveArticle = (articleObj,callback)=>{
                             throw err;
                         })
                         .on('close',()=>{
-                            console.log('CSV file header contains: %s',csvHeader);
+                            console.log('About to write the Article data to the CSV File...');
+                            wisdom.processArticleLayoutFields(articleObj,csvHeader,callback);
                         });
-    */
+    
     fs.writeFile(fileName,JSON.stringify(articleObj,null,"\t"),(err)=>{
         if(err){
             console.log('There was a problem writing the details of article %s.',articleObj.id);
         }
-        wisdom.processArticleLayoutFields(articleObj,callback);
     });
 };
-wisdom.processArticleLayoutFields = (articleObj,callback)=>{
-    let articleLayoutFieldArray = [];
-    articleLayoutFieldArray.push(articleObj.id);
-    let articleKeyPrefix = articleObj.id.substr(0,3);
-    let articleType = wisdom.data.articleTypes[articleKeyPrefix];
-    _.each(articleObj.layoutItems,(element,index,list)=>{
-        //if its anything but a Rich Text field, push it into the array
-        if(element.type != 'RICH_TEXT_AREA'){
-            articleLayoutFieldArray.push(element.value);
+wisdom.processArticleLayoutFields = (articleObj,csvHeader,callback)=>{
+    console.log('executing processArticleLayoutFields');
+    //first lets create an object to hold the values we will be writing.
+    let csvHeaderArray = csvHeader.split(',');
+    let csvLineObj = {};
+    let articleType = wisdom.data.articleTypes[articleObj.id.substr(0,3)];
+    //now lets go through the header Array and find the object value
+    _.each(csvHeaderArray,(element,index,list)=>{
+        if(_.isUndefined(articleObj[element.toLowerCase()])){
+            console.log('Could not find field %s in %s. Looking in layout Items:',element,articleObj.id);
+            let displayItem = _.find(articleObj.layoutItems,(item)=>{item.name.toLowerCase()==element.toLowerCase()},element);
+            if(_.isUndefined(displayItem)){
+                console.log('Could not find value for %s. field at all. marking as empty..',element);
+                csvLineObj[element] = s.quote('','"');
+            } else {
+                if(displayItem.type=='RICH_TEXT_AREA'){
+                    let fileNamePart = articleObj.id + '-'+Date.now()+'.html';
+                    let fileName = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(articleType.name,'v'),'html',fileNamePart);
+                    fs.writeFileSync(fileName,displayName.value);
+                    csvLineObj[element] = s.quote('html/'+fileNamePart,'"');
+                    console.log('%s field was a RICH_TEXT_AREA. Wrote value to %s.',displayItem.name,csvLineObj[element]);
+                    wisdom.extractImageUrls(displayItem.value,articleObj,articleType);
+                } else {
+                    csvLineObj[element] = s.quote(displayItem.value);
+                }
+            }
         } else {
-            //we need to process this field as an HTML file
-            //create the filename to save it to.
-            let fileNamePart = articleObj.id + '-' + Date.now()+'.html';
-            let fileName = path.join(__dirname,process.env.DIR_ARTICLEDATA,articleType.name,'html',fileNamePart);
-            fs.writeFileSync(fileName,element.value);
-            articleLayoutFieldArray.push('html/'+fileNamePart);
-            wisdom.extractImageUrls(element.value,articleObj,articleType);
+            csvLineObj[element] = s.quote(articleObj[element.toLowerCase()]);
         }
     });
-    let recLine = s.join(',',articleLayoutFieldArray);
-    let csvAppendFile = path.join(__dirname,process.env.DIR_ARTICLEDATA,articleType.name,articleType.name+'.csv');
-    fs.appendFile(csvAppendFile,recLine+"\n",(err)=>{
+    let csvLineArray =[];
+    _.each(csvHeaderArray,(fieldName,index,list)=>{csvLineArray.push(csvLineObj[fieldName])});
+    let csvLine = s.join(',',csvLineArray);
+    let csvAppendFile = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(articleType.name,'v'),s.rtrim(articleType.name,'v')+'.csv');
+    fs.appendFile(csvAppendFile,csvLine+"\n",(err)=>{
         if(err){
-            console.log('Cannot write to file.');
+            console.log('cannot write to file');
             throw err;
         }
         callback();
@@ -371,7 +384,7 @@ wisdom.data = {
     articleTypes:{},
     articleImgUrlList:[],
     page_limit:1001,
-    article_page_size:10
+    article_page_size:50
 };
 //Begin Processing
 wisdom.authorize(wisdom.extractArticles);
