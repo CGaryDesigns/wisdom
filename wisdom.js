@@ -164,30 +164,36 @@ wisdom.obtainArticleTypeDetail = (articleTypeObj,callback)=>{
 }
 wisdom.createArticleStorageStructure = (callback)=>{
     console.log('Executing createArticleStorageStructure');
-    _.each(wisdom.data.articleTypes,(value,key,list)=>{
-        let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(value.name,'v'));
-        fs.mkdir(dirPath,(err)=>{
-            if(err && err.message.substr('EEXIST')==-1){
-                console.log('Could not create directory %s.',dirPath);
-                throw err;
-            }
-            try{
-                fs.mkdirSync(path.join(dirPath,'html'));
-                fs.mkdirSync(path.join(dirPath,'images'));
-            } catch(err) {
-                //TODO: need to make sure these don't exist
-            }
-            let fileData = wisdom.utils.createCSVFileHeader(value);
-            let fileName = path.join(dirPath,s.rtrim(value.name,'v')+'.csv');
-            fs.writeFile(fileName,fileData+"\n",(err)=>{
-                if(err){
-                    console.log('Error writing file %s.',fileName);
+    fs.mkdir(Path.join(__dirname,process.env.DIR_ARTICLEDATA,'metadata'),(err)=>{
+        if(err) throw err;
+    });
+    fs.mkdir(path.join(__dirname,process.env.DIR_ARTICLEDATA),(err)=>{
+        if(err && err.message.substr('EEXIST')==-1)throw err;
+        _.each(wisdom.data.articleTypes,(value,key,list)=>{
+            let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(value.name,'v'));
+            fs.mkdir(dirPath,(err)=>{
+                if(err && err.message.substr('EEXIST')==-1){
+                    console.log('Could not create directory %s.',dirPath);
                     throw err;
                 }
+                try{
+                    fs.mkdirSync(path.join(dirPath,'html'));
+                    fs.mkdirSync(path.join(dirPath,'images'));
+                } catch(err) {
+                    //TODO: need to make sure these don't exist
+                }
+                let fileData = wisdom.utils.createCSVFileHeader(value);
+                let fileName = path.join(dirPath,s.rtrim(value.name,'v')+'.csv');
+                fs.writeFile(fileName,fileData+"\n",(err)=>{
+                    if(err){
+                        console.log('Error writing file %s.',fileName);
+                        throw err;
+                    }
+                });
             });
         });
+        callback();
     });
-    callback();
 };
 wisdom.obtainArticleSummaryPage = (articlePageUrl,callback)=>{
     console.log('Executing obtainArticle Summary for URL %s.',articlePageUrl);
@@ -235,8 +241,9 @@ wisdom.obtainArticleDetail = (articleSumObj,callback)=>{
                 })
                 .on('end',()=>{
                     responseObj = JSON.parse(responseData);
-                    wisdom.sortAndSaveArticle(responseObj,callback);
-                    //wisdom.obtainMasterMetadata(responseObj,callback);
+                    //console.log('Article Detail Obtained: %s',JSON.stringify(responseObj,null,"\t"));
+                    wisdom.sortAndSaveArticle(responseObj);
+                    wisdom.obtainMasterMetadata(responseObj,callback);
                 });
         })
         .on('error',(err)=>{
@@ -279,6 +286,7 @@ wisdom.obtainMasterVersionInfo = (urlString,callback)=>{
         .on('error',(err)=>{throw err})
 }
 wisdom.obtainArticleRecInfo = (urlString,callback)=>{
+    console.log('executing obtainArticleRecInfo...');
     request.get(wisdom.utils.host+urlString,wisdom.utils.createServiceRequestOptions())
         .on('response',(incomingMsg)=>{
             let responseData = '';
@@ -294,8 +302,11 @@ wisdom.obtainArticleRecInfo = (urlString,callback)=>{
                                             input:fs.createReadStream(path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(responseObj.attributes.type,'v'),s.rtrim(responseObj.attributes.type,'v')+'.csv'))
                                          })
                                          .on('line',(line)=>{
-                                             if(lineCounter < 1) csvHeader = line;
-                                             else fileLineReader.close();
+                                             if(lineCounter < 1){
+                                                csvHeader = line;
+                                             }else{ 
+                                                 fileLineReader.close();
+                                             }
                                              lineCounter++;
                                          })
                                          .on('error',(err)=>{throw err})
@@ -314,37 +325,14 @@ wisdom.sortAndSaveArticle = (articleObj,callback)=>{
     //first lets figure out where to save this data
     let keyPrefix = articleObj.id.substr(0,3);
     let articleType = wisdom.data.articleTypes[keyPrefix];
-    let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.trim(articleType.name,'v'));
+    let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,'metadata');
     let fileName = path.join(dirPath,articleObj.id+'.json');
-    /*
-    let csvHeader;
-    let lineCounter = 0;
-    let fileLineReader = readline.createInterface({
-                            input:fs.createReadStream(path.join(dirPath,s.rtrim(articleType.name,'v')+'.csv'))
-                        })
-                        .on('line',(line)=>{
-                            if(lineCounter < 1){
-                                csvHeader = line;
-                            } else {
-                                fileLineReader.close();
-                            }
-                            lineCounter++;
-                        })
-                        .on('error',(err)=>{
-                            console.log('could not read file header:');
-                            throw err;
-                        })
-                        .on('close',()=>{
-                            console.log('About to write the Article data to the CSV File...');
-                            wisdom.processArticleLayoutFields(articleObj,csvHeader,callback);
-                        });
-    */
+
     fs.writeFile(fileName,JSON.stringify(articleObj,null,"\t"),(err)=>{
         if(err){
             console.log('There was a problem writing the details of article %s.',articleObj.id);
             throw err;
         }
-        wisdom.obtainMasterMetadata(articleObj,callback);
     });
 };
 wisdom.processArticleLayoutFields = (articleObj,csvHeader,callback)=>{
@@ -353,40 +341,28 @@ wisdom.processArticleLayoutFields = (articleObj,csvHeader,callback)=>{
     let csvHeaderArray = csvHeader.split(',');
     let csvLineObj = {};
     let articleType = wisdom.data.articleTypes[articleObj.KnowledgeArticleId.substr(0,3)];
-    console.log('Article Type Found: %s', articleType);
     //now lets go through the header Array and find the object value
     _.each(csvHeaderArray,(element,index,list)=>{
-        if(_.isUndefined(articleObj[element])){
-            let displayItem = _.find(articleObj.layoutItems,(item)=>{item.name.toLowerCase()==element.toLowerCase()},element);
-            if(_.isUndefined(displayItem)){
-                csvLineObj[element] = s.quote('','"');
-            } else {
-                if(displayItem.type=='RICH_TEXT_AREA'){
-                    let fileNamePart = articleObj.id + '-'+Date.now()+'.html';
-                    let fileName = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(articleType.name,'v'),'html',fileNamePart);
-                    fs.writeFileSync(fileName,displayName.value);
-                    csvLineObj[element] = s.quote('html/'+fileNamePart,'"');
-                    console.log('%s field was a RICH_TEXT_AREA. Wrote value to %s.',displayItem.name,csvLineObj[element]);
-                    wisdom.extractImageUrls(displayItem.value,articleObj,articleType);
-                } else {
-                    csvLineObj[element] = s.quote(displayItem.value);
-                }
-            }
+        //determine the field type
+        let fieldDefinition = _.find(articleType.fields,(item)=>{return item.name==element},element);
+        if(fieldDefinition.extraTypeInfo=='richtextarea'){
+            let fileNamePart = articleObj.KnowledgeArticleId + '-'+Date.now()+'.html';
+            let fileName = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(articleType.name,'v'),'html',fileNamePart);
+            fs.writeFile(fileName,articleObj[element],(err)=>{
+                if(err) throw err;
+                wisdom.extractImageUrls(articleObj[element],articleObj,articleType);
+            });
+            csvLineObj[element] = s.quote('html/'+fileNamePart);
         } else {
             csvLineObj[element] = s.quote(articleObj[element]);
         }
     });
-    //console.log('CSV Line: %s',JSON.stringify(csvLineObj,null,"\t"));
-    let csvLineArray =[];
+    let csvLineArray = [];
     _.each(csvHeaderArray,(fieldName,index,list)=>{csvLineArray.push(csvLineObj[fieldName])});
-    let csvLine = s.join(',',csvLineArray);
-    console.log('CSV line: %s',csvLine);
     let csvAppendFile = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(articleType.name,'v'),s.rtrim(articleType.name,'v')+'.csv');
-    fs.appendFile(csvAppendFile,csvLine+"\n",(err)=>{
-        if(err){
-            console.log('cannot write to file');
-            throw err;
-        }
+    console.log('Writing Line To CSV File: %s',csvAppendFile);
+    fs.appendFile(csvAppendFile,s.join(',',csvLineArray),(err)=>{
+        if(err) throw err;
         callback();
     });
 };
@@ -411,8 +387,6 @@ wisdom.obtainImage = (imageUrl,callback)=>{
             'Accept-Language':'en-US'
         }
     }
-    //console.log('URL Parts: %s',JSON.stringify(urlInfo));
-    
     request.get(imageUrl,requestOpt)
         .on('response',(incomingMsg)=>{
             console.log('response Received for Image:');
@@ -453,7 +427,7 @@ wisdom.data = {
     articleTypes:{},
     articleImgUrlList:[],
     page_limit:1001,
-    article_page_size:10
+    article_page_size:50 
 };
 //Begin Processing
 wisdom.authorize(wisdom.extractArticles);
