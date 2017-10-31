@@ -3,6 +3,8 @@
 //initialize constants
 const _ = require('underscore');
 const cheerio = require('cheerio');
+const csv = require('csvtojson');
+const csvfilegen = require('json2csv');
 const figlet = require('figlet');
 const fs = require('fs');
 const oauthProvider = require('simple-oauth2');
@@ -89,10 +91,15 @@ wisdom.articleProcessingQueue = new Queue((input,callback)=>{
                                             console.log('Total Tasks processed: %s of %s - %s percent complete.',stats.total,wisdom.data.articleUrlList.length,Math.round(((stats.total/wisdom.data.articleUrlList.length)*100)));
                                          })
                                          .on('drain',()=>{
-                                             console.log('All Done Processing Articles.. now to get images');
+                                             console.log('All Done Processing Articles.. now to get Category Group Data..');
+                                             wisdom.obtainDataCategoryGroupInfo(()=>{
+                                                 console.log('Now we have to add product category classification to the data in files...');
+                                             });
+                                             /*
                                              _.each(wisdom.data.articleImgUrlList,(element,index,list)=>{
                                                  wisdom.articleImageProcessing.push(element);
                                              });
+                                             */
                                          });
 wisdom.articleImageProcessing = new Queue((input,callback)=>{
                                            console.log('Trying to get Image %s.',input);
@@ -100,6 +107,13 @@ wisdom.articleImageProcessing = new Queue((input,callback)=>{
                                         },{afterProcessDelay:1000})
                                         .on('drain',()=>{
                                             console.log('All Done.');
+                                        });
+wisdom.fileProcessingQueue = new Queue((input,callback)=>{
+                                            wisdom.processCsvWithCategoryData(input,callback);
+                                            callback();
+                                        },{afterProcessingDelay:1000})
+                                        .on('drain',()=>{
+                                            console.log('All Done. Thanks for traveling on the Journey for wisdom!');
                                         });
 wisdom.extractArticles = ()=>{
     figlet('Wisdom',(err,data)=>{
@@ -164,10 +178,10 @@ wisdom.obtainArticleTypeDetail = (articleTypeObj,callback)=>{
 }
 wisdom.createArticleStorageStructure = (callback)=>{
     console.log('Executing createArticleStorageStructure');
-    fs.mkdir(Path.join(__dirname,process.env.DIR_ARTICLEDATA,'metadata'),(err)=>{
-        if(err) throw err;
-    });
     fs.mkdir(path.join(__dirname,process.env.DIR_ARTICLEDATA),(err)=>{
+        fs.mkdir(path.join(__dirname,process.env.DIR_ARTICLEDATA,'metadata'),(err)=>{
+            if(err && err.message.substr('EEXIST')==-1) throw err;
+        });
         if(err && err.message.substr('EEXIST')==-1)throw err;
         _.each(wisdom.data.articleTypes,(value,key,list)=>{
             let dirPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(value.name,'v'));
@@ -176,9 +190,17 @@ wisdom.createArticleStorageStructure = (callback)=>{
                     console.log('Could not create directory %s.',dirPath);
                     throw err;
                 }
+                //create the properties file
+                let propString = "CSVEncoding=UTF-8\n";
+                propString += "CSVSeparator=,\n";
+                propString += "DefaultHTMLEncoding=UTF-8\n";
+                propString += "DateFormat=yyyy-MM-dd\n";
+                propString += "DateTimeFormat=yyyy-MM-dd HH:mm:ss\n";
+                propString += 'ArticleTypes='+value.name;
                 try{
                     fs.mkdirSync(path.join(dirPath,'html'));
                     fs.mkdirSync(path.join(dirPath,'images'));
+                    fs.writeFileSync(path.join(dirPath,value.name+'.properties'),propString,{encoding:'utf8'});
                 } catch(err) {
                     //TODO: need to make sure these don't exist
                 }
@@ -361,10 +383,96 @@ wisdom.processArticleLayoutFields = (articleObj,csvHeader,callback)=>{
     _.each(csvHeaderArray,(fieldName,index,list)=>{csvLineArray.push(csvLineObj[fieldName])});
     let csvAppendFile = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(articleType.name,'v'),s.rtrim(articleType.name,'v')+'.csv');
     console.log('Writing Line To CSV File: %s',csvAppendFile);
-    fs.appendFile(csvAppendFile,s.join(',',csvLineArray),(err)=>{
+    fs.appendFile(csvAppendFile,s.join(',',csvLineArray)+"\n",(err)=>{
         if(err) throw err;
         callback();
     });
+};
+wisdom.obtainDataCategoryGroupInfo = (callback)=>{
+    console.log('executing obtainDataCategoryGroupInfo');
+    let dataCategoryUrl = wisdom.utils.host + '/services/data/v41.0/support/dataCategoryGroups?sObjectName=KnowledgeArticleVersion';
+    request.get(dataCategoryUrl,wisdom.utils.createServiceRequestOptions())
+        .on('response',(incomingMsg)=>{
+            let responseData = '';
+            let responseObj = {};
+            incomingMsg
+                .on('data',(chunk)=>{responseData += chunk.toString('utf8')})
+                .on('end',()=>{
+                    responseObj = JSON.parse(responseData);
+                    _.each(responseObj.categoryGroups,(element,index,list)=>{
+                        wisdom.data.categoryGroupArray.push(element);
+                    })
+                    wisdom.addCategoriesToFiles(callback);
+                });
+        })
+        .on('error',(err)=>{throw err})
+};
+wisdom.addCategoriesToFiles = (callback)=>{
+    let csvFileArray = [];
+    _.each(wisdom.data.articleTypes,(value,key,list)=>{
+        let fileLocation = path.join(__dirname,process.env.DIR_ARTICLEDATA,s.rtrim(value.name,'v'),s.rtrim(value.name,'v')+'.csv');
+        csvFileArray.push(fileLocation);
+    })
+    //console.log('CSV File Array: %s',JSON.stringify(csvFileArray,null,"\t"));
+    _.each(csvFileArray,(element,index,list)=>{
+        wisdom.fileProcessingQueue.push(element);
+    });
+    callback();
+}
+wisdom.processCsvWithCategoryData = (fileName,callback)=>{
+    console.log('executing processCsvWithCategoryData on %s',fileName);
+    /*
+    let headerArray = [];
+    let dataArray = [];
+    //first lets read the lines from the file
+    csv()
+        .fromFile(fileName)
+        .on('header',(header)=>{headerArray = header})
+        .on('json',(jsonObj,rowIndex)=>{
+            
+            console.log('Reading line from file: %s',fileName);
+            //get the Knowledge Metadata file
+            let knowledgeMetaPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,'metadata',jsonObj.KnowledgeArticleId+'.json');
+            fs.readFile(knowledgeMetaPath,(err,data)=>{
+                if(err) throw err;
+                let jsonMetaObj = JSON.parse(data);
+                _.each(wisdom.data.categoryGroupArray,(element,index,list)=>{
+                    let categoryGroup = _.find(jsonMetaObj.categoryGroups,(item)=>{return item.groupName==element.name},element);
+                    if(_.isUndefined(categoryGroup)){
+                        jsonObj['datacategorygroup.'+element.name] = '';
+                    } else {
+                        let dataCategoryString ='';
+                        _.each(categoryGroup.selectedCategories,(categoryObj,index,list)=>{
+                            dataCategoryString+='+'+categoryObj.categoryName;
+                        });
+                        jsonObj['datacategorygroup.'+element.name] = s.ltrim(dataCategoryString,'+');
+                    }
+                });
+                dataArray.push(jsonObj);
+            });
+            
+        })
+        .on('end_parsed',(jsonArrObj)=>{
+            console.log(JSON.stringify(jsonArrObj,null,"\t"));
+        })
+        .on('end',(err)=>{
+            
+            if(err) throw err;
+            console.log('The data array has %s rows',dataArray.length);
+            _.each(wisdom.data.categoryGroupArray,(element,index,list)=>{
+                headerArray.push('datacategorygroup.'+ element.name);
+            });
+            //now export the csv file
+            csvfilegen({data:dataArray,fields:headerArray,preserveNewLinesInValues:true},(err, finalFileData)=>{
+                fs.writeFile(fileName + '.new.csv',finalFileData,(err)=>{
+                    if(err) throw err;
+                    callback();
+                });
+            });
+            
+        })
+        .on('error',(err)=>{throw err});
+    */
 };
 wisdom.extractImageUrls = (htmlString,articleObj,articleType)=>{
     let $ = cheerio.load('<div>'+htmlString+'</div>');
@@ -374,29 +482,8 @@ wisdom.extractImageUrls = (htmlString,articleObj,articleType)=>{
     });
 };
 wisdom.obtainImage = (imageUrl,callback)=>{
-    console.log('executing obtainImage');
-    //first lets parse the URL, get the domain, and create a cookie for it.
-    let urlInfo = new urlparser(imageUrl);
-    //setting up cookie
-    let cookieJar = request.jar();
-    cookieJar.setCookie(request.cookie('sid='+wisdom.access_token),urlInfo.hostname);
-    //build header
-    let requestOpt = {
-        headers:{
-            'Cookie':'sid='+wisdom.access_token,
-            'Accept-Language':'en-US'
-        }
-    }
-    request.get(imageUrl,requestOpt)
-        .on('response',(incomingMsg)=>{
-            console.log('response Received for Image:');
-            console.log(incomingMsg.headers);
-            incomingMsg.pipe(process.stdout).on('end',()=>{callback()});
-        })
-        .on('error',(err)=>{
-            console.log('There was a problem obtaining the response. Error: %s',err.message);
-            callback();
-        });
+    console.log('executing obtainImage on %s',imageUrl);
+    callback();
 };
 wisdom.utils = {
     createServiceRequestOptions: ()=>{
@@ -426,8 +513,9 @@ wisdom.data = {
     articleUrlList:[],
     articleTypes:{},
     articleImgUrlList:[],
+    categoryGroupArray:[],
     page_limit:1001,
-    article_page_size:50 
+    article_page_size:10 
 };
 //Begin Processing
 wisdom.authorize(wisdom.extractArticles);
