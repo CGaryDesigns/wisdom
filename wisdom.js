@@ -110,7 +110,6 @@ wisdom.articleImageProcessing = new Queue((input,callback)=>{
                                         });
 wisdom.fileProcessingQueue = new Queue((input,callback)=>{
                                             wisdom.processCsvWithCategoryData(input,callback);
-                                            callback();
                                         },{afterProcessingDelay:1000})
                                         .on('drain',()=>{
                                             console.log('All Done. Thanks for traveling on the Journey for wisdom!');
@@ -421,58 +420,49 @@ wisdom.addCategoriesToFiles = (callback)=>{
 }
 wisdom.processCsvWithCategoryData = (fileName,callback)=>{
     console.log('executing processCsvWithCategoryData on %s',fileName);
-    /*
+    
     let headerArray = [];
     let dataArray = [];
     //first lets read the lines from the file
     csv()
         .fromFile(fileName)
         .on('header',(header)=>{headerArray = header})
-        .on('json',(jsonObj,rowIndex)=>{
-            
-            console.log('Reading line from file: %s',fileName);
-            //get the Knowledge Metadata file
-            let knowledgeMetaPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,'metadata',jsonObj.KnowledgeArticleId+'.json');
-            fs.readFile(knowledgeMetaPath,(err,data)=>{
-                if(err) throw err;
-                let jsonMetaObj = JSON.parse(data);
-                _.each(wisdom.data.categoryGroupArray,(element,index,list)=>{
-                    let categoryGroup = _.find(jsonMetaObj.categoryGroups,(item)=>{return item.groupName==element.name},element);
-                    if(_.isUndefined(categoryGroup)){
-                        jsonObj['datacategorygroup.'+element.name] = '';
-                    } else {
-                        let dataCategoryString ='';
-                        _.each(categoryGroup.selectedCategories,(categoryObj,index,list)=>{
-                            dataCategoryString+='+'+categoryObj.categoryName;
-                        });
-                        jsonObj['datacategorygroup.'+element.name] = s.ltrim(dataCategoryString,'+');
-                    }
-                });
-                dataArray.push(jsonObj);
-            });
-            
-        })
         .on('end_parsed',(jsonArrObj)=>{
-            console.log(JSON.stringify(jsonArrObj,null,"\t"));
-        })
-        .on('end',(err)=>{
-            
-            if(err) throw err;
-            console.log('The data array has %s rows',dataArray.length);
-            _.each(wisdom.data.categoryGroupArray,(element,index,list)=>{
-                headerArray.push('datacategorygroup.'+ element.name);
+            var massagedJSONArrObj = _.map(jsonArrObj,(jsonLineItem)=>{
+                let knowledgeMetaPath = path.join(__dirname,process.env.DIR_ARTICLEDATA,'metadata',jsonLineItem.KnowledgeArticleId+'.json');
+                console.log('About to read %s for Data Category Groups.');
+                let knowledgeData;
+                try{
+                    knowledgeData = fs.readFileSync(knowledgeMetaPath,{encoding:'utf8'});
+                }catch(err){
+                    throw err;
+                }
+                let knowledgeObj = JSON.parse(knowledgeData);
+                _.each(knowledgeObj.categoryGroups,(dcElement,index,list)=>{
+                    jsonLineItem['datacategorygroup.'+dcElement.groupName]='';
+                    let dcNames = [];
+                    _.each(dcElement.selectedCategories,(categoryObj,ind,lst)=>{
+                        dcNames.push(categoryObj.categoryName);
+                    });
+                    if(!_.isEmpty(dcNames)) jsonLineItem['datacategorygroup.'+dcElement.groupName] = s.join('+',dcNames);
+                });
+                return jsonLineItem;
             });
-            //now export the csv file
-            csvfilegen({data:dataArray,fields:headerArray,preserveNewLinesInValues:true},(err, finalFileData)=>{
-                fs.writeFile(fileName + '.new.csv',finalFileData,(err)=>{
+            //now we have massaged the entire array, lets build the file
+            _.each(wisdom.data.categoryGroupArray,(element,index,list)=>{
+                headerArray.push('datacategorygroup.'+element.name);
+            })
+            //export file 
+            csvfilegen({data:massagedJSONArrObj,fields:headerArray,preserveNewLinesInValues:true},(err,finalFileData)=>{
+                fs.writeFile(fileName+'.new.csv',finalFileData,(err)=>{
                     if(err) throw err;
+                    console.log('Wrote file %s',fileName+'.new.csv');
                     callback();
                 });
             });
-            
         })
         .on('error',(err)=>{throw err});
-    */
+        
 };
 wisdom.extractImageUrls = (htmlString,articleObj,articleType)=>{
     let $ = cheerio.load('<div>'+htmlString+'</div>');
@@ -515,7 +505,7 @@ wisdom.data = {
     articleImgUrlList:[],
     categoryGroupArray:[],
     page_limit:1001,
-    article_page_size:10 
+    article_page_size:50 
 };
 //Begin Processing
 wisdom.authorize(wisdom.extractArticles);
